@@ -379,7 +379,7 @@ static void inform_bss(struct owl_vif *vif)
 
         pr_info("owl: %s performs scan, found %s (SSID: %s, BSSID: %pM)\n",
                 vif->ndev->name, ap->ndev->name, ap->ssid, ap->bssid);
-        pr_info("cap = %d, beacon_ie_len = %d\n", capability,
+        pr_info("owl: cap = %d, beacon_ie_len = %d\n", capability,
                 ap->beacon_ie_len);
 
         /* Using the CLOCK_BOOTTIME clock, which remains unaffected by changes
@@ -1156,7 +1156,7 @@ static int owl_dump_station(struct wiphy *wiphy,
 {
     struct owl_vif *ap_vif = ndev_get_owl_vif(dev);
 
-    pr_info("Dump station at the idx %d\n", idx);
+    pr_info("owl: Dump station at the idx %d\n", idx);
 
     int ret = -ENONET;
     struct owl_vif *sta_vif = NULL;
@@ -1791,6 +1791,54 @@ static void owl_free(void)
     kfree(owl);
 }
 
+static void owl_update_ht_cap(struct ieee80211_supported_band *band)
+{
+    band->ht_cap.ht_supported = true;
+    band->ht_cap.cap = IEEE80211_HT_CAP_SUP_WIDTH_20_40 |
+                       IEEE80211_HT_CAP_SGI_20 | IEEE80211_HT_CAP_SGI_40 |
+                       IEEE80211_HT_CAP_DSSSCCK40;
+    band->ht_cap.ampdu_factor = IEEE80211_HT_MAX_AMPDU_64K;
+    band->ht_cap.ampdu_density = IEEE80211_HT_MPDU_DENSITY_16;
+    memset(&band->ht_cap.mcs, 0, sizeof(band->ht_cap.mcs));
+    /* supported HT-MCS 0-15 */
+    band->ht_cap.mcs.rx_mask[0] = 0xff;
+    band->ht_cap.mcs.rx_mask[1] = 0xff;
+    /* the Tx MCS set is defined and is equal to the Rx MCS set */
+    band->ht_cap.mcs.tx_params = IEEE80211_HT_MCS_TX_DEFINED;
+}
+
+static __le16 owl_get_mcs_map(u32 nss, enum ieee80211_vht_mcs_support supp)
+{
+    u16 mcs_map;
+    int i;
+
+    for (i = 0, mcs_map = 0xFFFF; i < nss; i++)
+        mcs_map = (mcs_map << 2) | supp;
+
+    return cpu_to_le16(mcs_map);
+}
+
+static void owl_update_vht_cap(struct ieee80211_supported_band *band)
+{
+    __le16 mcs_map;
+
+    /* not allow in 2.4G band */
+    if (band->band == NL80211_BAND_2GHZ)
+        return;
+
+    band->vht_cap.vht_supported = true;
+    /* mandatory support for 20 MHz, 40 MHz, and 80 MHz channel widths */
+    band->vht_cap.cap = IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_160MHZ |
+                        IEEE80211_VHT_CAP_MAX_MPDU_LENGTH_11454 |
+                        IEEE80211_VHT_CAP_SHORT_GI_160 |
+                        IEEE80211_VHT_CAP_SHORT_GI_80 |
+                        IEEE80211_VHT_CAP_MAX_A_MPDU_LENGTH_EXPONENT_MASK;
+    /* supported VHT-MCS 0-9 for 1-8 spatial streams */
+    mcs_map = owl_get_mcs_map(8, IEEE80211_VHT_MCS_SUPPORT_0_9);
+    band->vht_cap.vht_mcs.rx_mcs_map = mcs_map;
+    band->vht_cap.vht_mcs.tx_mcs_map = mcs_map;
+}
+
 /* Allocate and register wiphy.
  * Virtual interfaces should be created by nl80211, which will call
  * cfg80211_ops->add_iface(). This program creates a wiphy for every
@@ -1828,8 +1876,7 @@ static struct wiphy *owcfg80211_add(void)
         /* FIXME: add other band capabilities if needed, such as 40 width */
         switch (band) {
         case NL80211_BAND_2GHZ:
-            nf_band_2ghz.ht_cap.cap = IEEE80211_HT_CAP_SGI_20;
-            nf_band_2ghz.ht_cap.ht_supported = false;
+            nf_band_2ghz.band = NL80211_BAND_2GHZ;
             nf_band_2ghz.channels =
                 kmemdup(owl_supported_channels_2ghz,
                         sizeof(owl_supported_channels_2ghz), GFP_KERNEL);
@@ -1837,9 +1884,11 @@ static struct wiphy *owcfg80211_add(void)
             nf_band_2ghz.bitrates = kmemdup(
                 owl_supported_rates, sizeof(owl_supported_rates), GFP_KERNEL);
             nf_band_2ghz.n_bitrates = ARRAY_SIZE(owl_supported_rates);
+            owl_update_ht_cap(&nf_band_2ghz);
             wiphy->bands[band] = &nf_band_2ghz;
             break;
         case NL80211_BAND_5GHZ:
+            nf_band_5ghz.band = NL80211_BAND_5GHZ;
             nf_band_5ghz.channels =
                 kmemdup(owl_supported_channels_5ghz,
                         sizeof(owl_supported_channels_5ghz), GFP_KERNEL);
@@ -1850,6 +1899,8 @@ static struct wiphy *owcfg80211_add(void)
                             sizeof(struct ieee80211_rate),
                         GFP_KERNEL);
             nf_band_5ghz.n_bitrates = ARRAY_SIZE(owl_supported_rates) - 4;
+            owl_update_ht_cap(&nf_band_5ghz);
+            owl_update_vht_cap(&nf_band_5ghz);
             wiphy->bands[band] = &nf_band_5ghz;
             break;
         default:
